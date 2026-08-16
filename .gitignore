@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Analysis outputs
+output/
+Final_ML_Main_*/
+Final_ML_Sensitivity_*/
+Final_ML_Interaction_SR_SM_*/
+Final_Publication_Figures/
+
+# Runtime pointers and checkpoints
+active_*_run.txt
+latest_*_run.txt
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.log
