@@ -3,13 +3,9 @@
 川西北草地生态系统韧性机器学习分析 —— 公共函数模块
 
 本文件不要单独运行。
-由以下脚本自动调用：
+由以下两个脚本自动调用：
 1) 01_Main_ML_NestedCV_OOFSHAP_ALE.py
 2) 02_Sensitivity_Analyses.py
-3) 04_SHAP_Interaction_SR_SM.py
-
-03_Redraw_Final_Figures.py 只读取 01/02 已完成结果并独立重绘图件，
-不依赖本模块中的训练函数。
 
 核心固定原则
 ------------
@@ -90,28 +86,6 @@ from joblib import Parallel, delayed
 # =============================================================================
 # 0. 固定配置
 # =============================================================================
-# GitHub 公共复现版目录约定：
-# repo_root/
-# ├── data/modeling_data.csv
-# ├── machine_learning/*.py
-# └── output/machine_learning/
-#
-# 如需在本机使用其他数据或输出位置，可设置环境变量：
-#   NW_SICHUAN_DATA_FILE
-#   NW_SICHUAN_OUTPUT_ROOT
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
-DEFAULT_DATA_FILE = PROJECT_ROOT / "data" / "modeling_data.csv"
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "output" / "machine_learning"
-
-DATA_FILE_PATH = Path(
-    os.environ.get("NW_SICHUAN_DATA_FILE", str(DEFAULT_DATA_FILE))
-).expanduser()
-
-OUTPUT_ROOT_PATH = Path(
-    os.environ.get("NW_SICHUAN_OUTPUT_ROOT", str(DEFAULT_OUTPUT_ROOT))
-).expanduser()
-
 TARGET = "RI"
 GROUP_COLUMN = "patch_id1"
 BLOCK100_COLUMN = "Block100"
@@ -2330,7 +2304,7 @@ def plot_shap_outputs(
 
 
 # =============================================================================
-# 10. ALE：25 条外层曲线、经验不确定性带、转折稳定性
+# 10. ALE：25 条外层曲线、2.5%–97.5%经验分位区间、转折稳定性
 # =============================================================================
 def calculate_ale_1d(
     fitted_model,
@@ -2503,6 +2477,7 @@ def run_ale_25models(
         vals = g["ALE"].dropna().to_numpy(float)
         if len(vals):
             summary_rows.append({"feature": feat, "x": xval, "mean_ALE": float(np.mean(vals)), "q2.5": float(np.quantile(vals, 0.025)), "q97.5": float(np.quantile(vals, 0.975)), "n_curves": len(vals)})
+    # Legacy filename retained for compatibility; columns q2.5 and q97.5 are the 2.5th–97.5th percentile interval.
     summary = pd.DataFrame(summary_rows); summary.to_csv(output_folder / "ALE_summary_95_empirical_interval.csv", index=False, encoding="utf-8-sig")
 
     threshold = pd.DataFrame(threshold_rows); threshold.to_csv(output_folder / "ALE_thresholds_each_outer_model.csv", index=False, encoding="utf-8-sig")
@@ -2538,7 +2513,7 @@ def plot_ale_outputs(ale_result: Dict[str, pd.DataFrame], top_features: Sequence
     fig, axes = plt.subplots(2, 3, figsize=(15.6, 8.6)); axes = axes.reshape(-1)
     for i, feat in enumerate(top_features):
         ax = axes[i]; g = summary[summary["feature"] == feat].sort_values("x")
-        ax.fill_between(g["x"].to_numpy(), g["q2.5"].to_numpy(), g["q97.5"].to_numpy(), alpha=0.25, linewidth=0, label="95% empirical uncertainty interval")
+        ax.fill_between(g["x"].to_numpy(), g["q2.5"].to_numpy(), g["q97.5"].to_numpy(), alpha=0.25, linewidth=0, label="2.5th–97.5th percentile interval")
         ax.plot(g["x"], g["mean_ALE"], linewidth=2.1, label="Mean ALE"); ax.axhline(0, color="black", linestyle="-.", linewidth=0.9)
         ax.set_title(display_name(feat), pad=8); set_feature_xaxis_label_with_unit(ax, feat, 12, 11, -0.105); ax.set_ylabel("ALE effect"); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False); ax.grid(axis="y", linestyle="--", alpha=0.25, linewidth=0.6); add_panel_label(ax, panel_label(i)); force_times_new_roman(ax)
     for i in range(len(top_features), 6): fig.delaxes(axes[i])
@@ -2546,7 +2521,7 @@ def plot_ale_outputs(ale_result: Dict[str, pd.DataFrame], top_features: Sequence
     fig.tight_layout(rect=[0, 0, 1, 0.96]); force_figure_times_new_roman(fig); save_figure_formats(fig, main_figure_folder / f"{prefix}{model_name}_ALE_Top6_Combo")
 
     for i, feat in enumerate(top_features):
-        g = summary[summary["feature"] == feat].sort_values("x"); fig, ax = plt.subplots(figsize=(6.5, 5.0)); ax.fill_between(g["x"].to_numpy(), g["q2.5"].to_numpy(), g["q97.5"].to_numpy(), alpha=0.25, linewidth=0, label="95% empirical uncertainty interval"); ax.plot(g["x"], g["mean_ALE"], linewidth=2.1, label="Mean ALE"); ax.axhline(0, color="black", linestyle="-.", linewidth=0.9); ax.set_title(display_name(feat), pad=8); set_feature_xaxis_label_with_unit(ax, feat, 12, 11, -0.105); ax.set_ylabel("ALE effect"); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False); ax.grid(axis="y", linestyle="--", alpha=0.25, linewidth=0.6); ax.legend(frameon=False, fontsize=9); add_panel_label(ax, panel_label(i)); force_figure_times_new_roman(fig); fig.tight_layout(); save_figure_formats(fig, supplementary_figure_folder / f"{prefix}{model_name}_ALE_{feat}_Single")
+        g = summary[summary["feature"] == feat].sort_values("x"); fig, ax = plt.subplots(figsize=(6.5, 5.0)); ax.fill_between(g["x"].to_numpy(), g["q2.5"].to_numpy(), g["q97.5"].to_numpy(), alpha=0.25, linewidth=0, label="2.5th–97.5th percentile interval"); ax.plot(g["x"], g["mean_ALE"], linewidth=2.1, label="Mean ALE"); ax.axhline(0, color="black", linestyle="-.", linewidth=0.9); ax.set_title(display_name(feat), pad=8); set_feature_xaxis_label_with_unit(ax, feat, 12, 11, -0.105); ax.set_ylabel("ALE effect"); ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False); ax.grid(axis="y", linestyle="--", alpha=0.25, linewidth=0.6); ax.legend(frameon=False, fontsize=9); add_panel_label(ax, panel_label(i)); force_figure_times_new_roman(fig); fig.tight_layout(); save_figure_formats(fig, supplementary_figure_folder / f"{prefix}{model_name}_ALE_{feat}_Single")
 
 
 # =============================================================================

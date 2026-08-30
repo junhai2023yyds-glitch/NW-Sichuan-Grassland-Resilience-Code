@@ -16,13 +16,13 @@ r"""
 8. 不覆盖 01 / 02 原始结果。
 9. 横轴单位统一置于最右端并与刻度值平行；变量名单独位于下一行中央。
 
-GitHub 公共复现版
------------------
-默认从 <repo>/output/machine_learning/ 下读取：
-- latest_main_run.txt
-- latest_sensitivity_run.txt
+当前结果目录
+------------
+01 主分析：
+C:\Users\yihai\Desktop\川西北\机器学习建模数据\XGBOOST+SHAP最新20km\Final_ML_Main_20260812_230042
 
-因此不绑定任何本机绝对路径或固定时间戳目录。
+02 敏感性：
+C:\Users\yihai\Desktop\川西北\机器学习建模数据\XGBOOST+SHAP最新20km\Final_ML_Sensitivity_20260814_140146
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ from __future__ import annotations
 import gc
 import json
 import math
-import os
 import string
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -46,6 +46,9 @@ import matplotlib.patheffects as pe
 from matplotlib import cm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from matplotlib.textpath import TextPath
+from matplotlib.transforms import ScaledTranslation
+from matplotlib.ticker import FuncFormatter
 from scipy import stats
 
 try:
@@ -55,56 +58,18 @@ except Exception:
 
 
 # =============================================================================
-# 1. GitHub 公共复现路径
+# 1. 固定路径
 # =============================================================================
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
+MAIN_RUN = Path(
+    r"C:\Users\yihai\Desktop\川西北\机器学习建模数据\XGBOOST+SHAP最新20km\Final_ML_Main_20260812_230042"
+)
 
-OUTPUT_ROOT_FOLDER = Path(
-    os.environ.get(
-        "NW_SICHUAN_OUTPUT_ROOT",
-        str(PROJECT_ROOT / "output" / "machine_learning"),
-    )
-).expanduser()
+SENS_RUN = Path(
+    r"C:\Users\yihai\Desktop\川西北\机器学习建模数据\XGBOOST+SHAP最新20km\Final_ML_Sensitivity_20260814_140146"
+)
 
-LATEST_MAIN_POINTER = OUTPUT_ROOT_FOLDER / "latest_main_run.txt"
-LATEST_SENS_POINTER = OUTPUT_ROOT_FOLDER / "latest_sensitivity_run.txt"
-
-
-def read_completed_run_from_pointer(pointer: Path, label: str) -> Path:
-    if not pointer.exists():
-        raise FileNotFoundError(
-            f"未找到 {pointer}。\n"
-            f"请先完整运行对应的 {label} 分析脚本。"
-        )
-
-    run_dir = Path(pointer.read_text(encoding="utf-8").strip())
-    if not run_dir.exists():
-        raise FileNotFoundError(f"{pointer.name} 指向的目录不存在：{run_dir}")
-    if not (run_dir / "RUN_COMPLETE.flag").exists():
-        raise RuntimeError(f"{label} 目录尚未完整结束：{run_dir}")
-    return run_dir
-
-
-# 运行时再解析 01/02 的 latest 指针，避免仅导入本脚本时就要求结果目录已存在。
-MAIN_RUN: Optional[Path] = None
-SENS_RUN: Optional[Path] = None
-
-
-def initialize_run_paths() -> None:
-    global MAIN_RUN, SENS_RUN
-    MAIN_RUN = read_completed_run_from_pointer(
-        LATEST_MAIN_POINTER,
-        "01 主分析",
-    )
-    SENS_RUN = read_completed_run_from_pointer(
-        LATEST_SENS_POINTER,
-        "02 敏感性",
-    )
-
-
-# 所有重绘结果输出到统一公开输出根目录；内部继续严格分 01 / 02。
-REDRAW_ROOT = OUTPUT_ROOT_FOLDER / "Final_Publication_Figures"
+# 所有重绘结果输出到这里；内部再严格分 01 / 02。
+REDRAW_ROOT = MAIN_RUN.parent / "Final_Publication_Figures"
 
 MAIN_OUT = REDRAW_ROOT / "01_Main_Analysis"
 SENS_OUT = REDRAW_ROOT / "02_Sensitivity_Analyses"
@@ -137,6 +102,9 @@ PLOT_DATA_OUT = REDRAW_ROOT / "00_Plot_Data_Snapshot"
 # 2. 输出与字体
 # =============================================================================
 FIG_DPI = 600
+# ALE 组合图会被直接插入 Word 并在论文中放大；单独提供更高分辨率的
+# 位图输出。SVG 仍同步保存，可在支持 SVG 的 Word 版本中作为首选矢量图。
+WORD_ALE_DPI = 720
 
 SAVE_PNG = True
 SAVE_TIF = True
@@ -184,6 +152,42 @@ SHAP_DEP_SINGLE_SIZE = (6.3, 4.8)
 ALE_COMBO_SIZE = (13.8, 7.8)
 ALE_SINGLE_SIZE = (6.3, 4.8)
 ALE_COMPARE_SIZE = (13.8, 7.8)
+
+# Word 正文通栏版：10 in 源画布插入 A4 正文后会自动缩至约 6.7 in，
+# 配合下方的字号放大，最终文字保持在约 9–10 pt，而不会因 13.8 in
+# 的超宽画布被强制缩小而难以辨认。
+# Word 正文通栏版保持紧凑横向比例，仅略增加高度，给纵轴顶部留出图例空间。
+ALE_WORD_COMBO_SIZE = (10.0, 6.4)
+ALE_WORD_TEXT_SCALE = 1.35
+
+# Word 版画布较窄时，Matplotlib 会自动改变刻度间隔。这里固定为原 13.8 in
+# 组合图的刻度，确保仅缩放视觉尺寸，绝不改变读图数值。
+ALE_WORD_REFERENCE_TICKS = {
+    "TMX": {
+        "x": [12, 14, 16, 18, 20, 22, 24],
+        "y": [-0.04, -0.03, -0.02, -0.01, 0.00, 0.01, 0.02],
+    },
+    "SR": {
+        "x": [3000, 3200, 3400, 3600, 3800, 4000],
+        "y": [-0.01, -0.0075, -0.005, -0.0025, 0.00, 0.0025, 0.005, 0.0075, 0.01, 0.0125, 0.015],
+    },
+    "TMN": {
+        "x": [-30, -25, -20, -15, -10, -5],
+        "y": [-0.025, -0.02, -0.015, -0.01, -0.005, 0.00, 0.005, 0.01],
+    },
+    "SM": {
+        "x": [0, 20, 40, 60, 80, 100, 120, 140],
+        "y": [-0.015, -0.01, -0.005, 0.00, 0.005, 0.01, 0.015],
+    },
+    "PRE": {
+        "x": [500, 600, 700, 800, 900],
+        "y": [-0.015, -0.01, -0.005, 0.00, 0.005, 0.01, 0.015],
+    },
+    "GI": {
+        "x": [-0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0],
+        "y": [-0.02, -0.015, -0.01, -0.005, 0.00, 0.005, 0.01],
+    },
+}
 
 SENS_PERF_SIZE = (8.2, 4.6)
 SENS_ALL_PERF_SIZE = (11.5, 3.9)
@@ -320,6 +324,15 @@ def panel_label(i: int) -> str:
     return f"({string.ascii_lowercase[i]})"
 
 
+def format_three_decimal(value: float, _position: int) -> str:
+    """标准四舍五入到三位小数，避免 0.0075 被显示为 0.007。"""
+    rounded = Decimal(str(float(value))).quantize(
+        Decimal("0.001"),
+        rounding=ROUND_HALF_UP,
+    )
+    return f"{rounded:.3f}"
+
+
 def add_panel_label(
     ax,
     i: int,
@@ -362,23 +375,40 @@ def set_feature_xaxis(
     ax,
     feature: str,
     y: float = -0.115,
+    font_size: Optional[float] = None,
 ) -> None:
     """
     SCI 最终横轴格式：
 
-    刻度值：正常显示在横轴下方；
-    单位：位于横轴最右端，并与刻度值处于同一水平带；
-    变量名：单独放在下一行中央。
+    1. 横轴刻度值正常显示；
+    2. 单位与刻度值处于同一水平带；
+    3. 单位紧跟横轴最右侧刻度值；
+    4. 变量名单独位于下一行中央。
 
-    例如：
-        14    16    18    20    22   (°C)
-                     TMX
+    说明
+    ----
+    TMN 和 PRE 在当前自动刻度范围下，最右侧刻度可能略超出 xlim，
+    之前用“xlim 内最后刻度”定位会误把单位放到前一个刻度之后，
+    从而出现：
+        (°C) -7.5
+        (mm) 850
 
-    参数 y 为兼容旧调用保留，但实际位置由本函数统一控制。
+    因此本版对 TMN / PRE 采用最稳定的方法：
+    直接把单位写进“距离右侧 xlim 最近的那个刻度标签”本身，
+    形成一个完整 Text 对象：
+        -7.5 (°C)
+        850 (mm)
+
+    这样数字和单位绝不可能互相重叠或错位。
+
+    其他已经正常的 TMX / SR / SM / GI 等保持上一版方式不变。
     """
 
     ax.set_xlabel("")
 
+    # ------------------------------------------------------------------
+    # A. 变量名：下一行中央
+    # ------------------------------------------------------------------
     ax.text(
         0.5,
         -0.145,
@@ -386,45 +416,254 @@ def set_feature_xaxis(
         transform=ax.transAxes,
         ha="center",
         va="top",
-        fontsize=AXIS_LABEL_SIZE,
+        fontsize=AXIS_LABEL_SIZE if font_size is None else font_size,
         fontfamily=FONT_FAMILY,
         clip_on=False,
         zorder=300,
     )
 
     unit = feature_unit(feature)
+    if not unit:
+        return
 
-    if unit:
-        ax.text(
-            1.015,
-            -0.055,
-            f"({unit})",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=TICK_SIZE,
-            fontfamily=FONT_FAMILY,
-            clip_on=False,
-            zorder=300,
+    # ==================================================================
+    # B. TMN / PRE：
+    #    单位直接并入最右侧视觉刻度标签，彻底消除重叠。
+    # ==================================================================
+    if feature in {"TMN", "PRE"}:
+
+        # Agg 后端下先绘制一次，使 ScalarFormatter 的刻度文字最终确定。
+        # 这里只在图构建阶段调用，不绑定 draw_event，
+        # 因此不会造成 PDF/SVG 的 FigureCanvasPdf 报错。
+        ax.figure.canvas.draw()
+
+        ticks = np.asarray(
+            ax.get_xticks(),
+            dtype=float,
         )
+
+        ticklabels = ax.get_xticklabels()
+
+        label_texts = [
+            lab.get_text()
+            for lab in ticklabels
+        ]
+
+        if len(ticks) == 0 or len(label_texts) == 0:
+            return
+
+        x0, x1 = ax.get_xlim()
+
+        # 正常横轴：
+        # 选择“距离右侧 xlim 最近”的主刻度。
+        #
+        # 这样即使 850 或 -7.5 略微位于自动 xlim 之外，
+        # 仍然会被正确识别为视觉上的最右侧刻度，
+        # 而不会误选 800 或 -10.0。
+        if x1 >= x0:
+            idx = int(
+                np.nanargmin(
+                    np.abs(ticks - x1)
+                )
+            )
+        else:
+            idx = int(
+                np.nanargmin(
+                    np.abs(ticks - x0)
+                )
+            )
+
+        if idx >= len(label_texts):
+            return
+
+        base_label = str(
+            label_texts[idx]
+        ).strip()
+
+        if not base_label:
+            # 极少数情况下 formatter 尚未产生字符串，
+            # 用通用格式兜底。
+            value = ticks[idx]
+
+            if abs(value - round(value)) < 1e-10:
+                base_label = f"{value:.0f}"
+            else:
+                base_label = f"{value:g}"
+
+        # 数字 + 空格 + 单位，成为同一个 Text 对象。
+        # 因此不再存在“单位压住数字”或“单位跑到数字左边”的可能。
+        label_texts[idx] = (
+            f"{base_label} ({unit})"
+        )
+
+        # 固定当前主刻度及其文字。
+        # 当前函数调用时数据、xlim 已经确定，
+        # 后续 style_axis / legend / subplots_adjust 不会改变数据刻度。
+        ax.set_xticks(
+            ticks,
+            labels=label_texts,
+        )
+
+        return
+
+    # ==================================================================
+    # C. 其他变量：
+    #    保持上一版已经正常的定位方式，不改。
+    # ==================================================================
+    ticks = np.asarray(
+        ax.get_xticks(),
+        dtype=float,
+    )
+
+    labels = ax.get_xticklabels()
+
+    x0, x1 = ax.get_xlim()
+    xmin = min(x0, x1)
+    xmax = max(x0, x1)
+    tol = max(
+        abs(xmax - xmin),
+        1.0,
+    ) * 1e-10
+
+    pairs = []
+
+    for tick, label in zip(
+        ticks,
+        labels,
+    ):
+
+        if not label.get_visible():
+            continue
+
+        if not (
+            xmin - tol
+            <= tick
+            <= xmax + tol
+        ):
+            continue
+
+        label_text = (
+            label.get_text().strip()
+        )
+
+        if not label_text:
+            continue
+
+        pairs.append(
+            (float(tick), label)
+        )
+
+    if not pairs:
+        return
+
+    if x1 >= x0:
+        right_tick, right_label = max(
+            pairs,
+            key=lambda item: item[0],
+        )
+    else:
+        right_tick, right_label = min(
+            pairs,
+            key=lambda item: item[0],
+        )
+
+    label_text = (
+        right_label
+        .get_text()
+        .strip()
+    )
+
+    font_prop = (
+        right_label
+        .get_fontproperties()
+    )
+
+    try:
+        text_path = TextPath(
+            (0, 0),
+            label_text,
+            prop=font_prop,
+            usetex=False,
+        )
+
+        tick_text_width_pt = float(
+            text_path
+            .get_extents()
+            .width
+        )
+
+        if (
+            not np.isfinite(
+                tick_text_width_pt
+            )
+            or tick_text_width_pt <= 0
+        ):
+            raise ValueError(
+                "invalid tick text width"
+            )
+
+    except Exception:
+
+        font_size_pt = float(
+            font_prop
+            .get_size_in_points()
+        )
+
+        tick_text_width_pt = (
+            0.56
+            * font_size_pt
+            * len(label_text)
+        )
+
+    UNIT_GAP_PT = 2.2
+
+    horizontal_offset_pt = (
+        tick_text_width_pt / 2.0
+        + UNIT_GAP_PT
+    )
+
+    unit_transform = (
+        right_label.get_transform()
+        + ScaledTranslation(
+            horizontal_offset_pt / 72.0,
+            0.0,
+            ax.figure.dpi_scale_trans,
+        )
+    )
+
+    ax.text(
+        right_tick,
+        0.0,
+        f"({unit})",
+        transform=unit_transform,
+        ha="left",
+        va=right_label.get_va(),
+        fontsize=TICK_SIZE,
+        fontfamily=FONT_FAMILY,
+        clip_on=False,
+        zorder=400,
+    )
+
 
 def save_figure(
     fig,
     base_file: Path | str,
     tight: bool = True,
     pad_inches: float = 0.08,
+    dpi: Optional[int] = None,
 ) -> None:
     base = Path(base_file).with_suffix("")
     ensure_dir(base.parent)
 
     kwargs = {"facecolor": "white"}
+    png_dpi = FIG_DPI if dpi is None else int(dpi)
 
     if tight:
         kwargs["bbox_inches"] = "tight"
         kwargs["pad_inches"] = pad_inches
 
     if SAVE_PNG:
-        fig.savefig(str(base) + ".png", dpi=FIG_DPI, **kwargs)
+        fig.savefig(str(base) + ".png", dpi=png_dpi, **kwargs)
 
     if SAVE_TIF:
         try:
@@ -841,10 +1080,12 @@ def draw_shap_bar(
 
     ax.invert_yaxis()
 
-    # 去掉最上面变量之上的多余纵轴和留白
+    # 去掉最上面变量之上的多余纵轴：
+    # 上边界直接贴到第一根横条的上边缘，因此左侧纵轴不会再向上多出一截。
+    first_bar_top = bars[0].get_y()
     ax.set_ylim(
         len(d) - 0.5,
-        -0.5,
+        first_bar_top,
     )
 
     maxv = float(vals.max())
@@ -1021,10 +1262,12 @@ def draw_shap_bar_beeswarm_combo(
 
     ax1.invert_yaxis()
 
-    # TMX 上方不留多余部分
+    # TMX 上方不再保留任何多余纵轴：
+    # 纵轴顶部与第一根横条上边缘完全齐平。
+    first_bar_top = bars[0].get_y()
     ax1.set_ylim(
         len(d) - 0.5,
-        -0.5,
+        first_bar_top,
     )
 
     maxv = float(vals.max())
@@ -1050,7 +1293,6 @@ def draw_shap_bar_beeswarm_combo(
             fontweight="bold",
         )
 
-    add_panel_label(ax1, 0)
     style_axis(ax1)
 
     # --------------------
@@ -1112,8 +1354,36 @@ def draw_shap_bar_beeswarm_combo(
 
     ax2.set_ylabel("Features")
 
-    add_panel_label(ax2, 1)
     style_axis(ax2)
+
+    # 子图编号统一放在两个子图内容区上方：
+    # (a) 不再压到 TMX 横条或纵轴上；
+    # (a) 与 (b) 使用完全相同的 y 坐标，保证水平对齐。
+    panel_y = 0.925
+
+    fig.text(
+        0.055,
+        panel_y,
+        "(a)",
+        ha="left",
+        va="bottom",
+        fontsize=PANEL_LABEL_SIZE,
+        fontweight="bold",
+        fontfamily=FONT_FAMILY,
+        zorder=500,
+    )
+
+    fig.text(
+        0.505,
+        panel_y,
+        "(b)",
+        ha="left",
+        va="bottom",
+        fontsize=PANEL_LABEL_SIZE,
+        fontweight="bold",
+        fontfamily=FONT_FAMILY,
+        zorder=500,
+    )
 
     save_figure(
         fig,
@@ -1654,7 +1924,7 @@ def redraw_shap_suite(
 
 
 # =============================================================================
-# 19. ALE 单图
+# 19. ALE 单图（2.5th–97.5th percentile interval）
 # =============================================================================
 def draw_ale_single(
     ale_summary: pd.DataFrame,
@@ -1713,7 +1983,7 @@ def draw_ale_single(
             facecolor=style["fill"],
             edgecolor="none",
             alpha=0.85,
-            label="95% empirical uncertainty interval",
+            label="2.5th–97.5th percentile interval",
         ),
         Line2D(
             [0],
@@ -1754,20 +2024,24 @@ def draw_ale_single(
 
 
 # =============================================================================
-# 20. ALE 2 × 3 六子图
+# 20. ALE 2 × 3 六子图（2.5th–97.5th percentile interval）
 # =============================================================================
 def draw_ale_top6_combo(
     ale_summary: pd.DataFrame,
     features: Sequence[str],
     out_file: Path,
+    word_ready: bool = False,
 ) -> None:
 
     features = list(features)[:6]
 
+    text_scale = ALE_WORD_TEXT_SCALE if word_ready else 1.0
+    combo_size = ALE_WORD_COMBO_SIZE if word_ready else ALE_COMBO_SIZE
+
     fig, axes = plt.subplots(
         2,
         3,
-        figsize=ALE_COMBO_SIZE,
+        figsize=combo_size,
     )
 
     axes = axes.ravel()
@@ -1813,6 +2087,24 @@ def draw_ale_top6_combo(
             linewidth=ZERO_LINE_WIDTH,
         )
 
+        if word_ready and feature in ALE_WORD_REFERENCE_TICKS:
+            # set_xticks / set_yticks 默认会扩展坐标范围，因此先保存、后恢复
+            # 原数据范围，只保留旧版在可视区域内的刻度。
+            original_xlim = ax.get_xlim()
+            original_ylim = ax.get_ylim()
+            reference_ticks = ALE_WORD_REFERENCE_TICKS[feature]
+            ax.set_xticks(reference_ticks["x"])
+            ax.set_yticks(reference_ticks["y"])
+            ax.set_xlim(original_xlim)
+            ax.set_ylim(original_ylim)
+            # 仅统一显示格式，刻度位置和纵轴范围保持旧版不变。
+            ax.yaxis.set_major_formatter(
+                FuncFormatter(format_three_decimal)
+            )
+            # 只在纵轴顶部增加少量视觉留白；原有数据范围、刻度位置不变。
+            ymin, ymax = ax.get_ylim()
+            ax.set_ylim(ymin, ymax + (ymax - ymin) * 0.075)
+
         # 顶部不显示重复名称
         ax.set_title("")
 
@@ -1820,9 +2112,18 @@ def draw_ale_top6_combo(
             ax,
             feature,
             y=-0.115,
+            font_size=AXIS_LABEL_SIZE * text_scale,
         )
 
-        ax.set_ylabel("ALE effect")
+        ax.set_ylabel(
+            "ALE effect",
+            fontsize=AXIS_LABEL_SIZE * text_scale,
+        )
+
+        ax.tick_params(
+            axis="both",
+            labelsize=TICK_SIZE * text_scale,
+        )
 
         # 每个子图都独立有图例
         handles = [
@@ -1830,7 +2131,7 @@ def draw_ale_top6_combo(
                 facecolor=style["fill"],
                 edgecolor="none",
                 alpha=0.85,
-                label="95% empirical uncertainty interval",
+                label="2.5th–97.5th percentile interval",
             ),
             Line2D(
                 [0],
@@ -1841,20 +2142,36 @@ def draw_ale_top6_combo(
             ),
         ]
 
-        ax.legend(
+        # 每个子图保留与自身曲线、置信区间同色的独立图例。
+        legend = ax.legend(
             handles=handles,
             loc="upper center",
-            bbox_to_anchor=(0.5, 1.03),
+            # Word 版图例留在子图上部；不透明底板确保阴影不会透入图例。
+            bbox_to_anchor=(0.5, 0.915 if word_ready else 1.03),
             ncol=2,
-            frameon=False,
-            fontsize=LEGEND_SIZE,
+            frameon=word_ready,
+            facecolor="white",
+            edgecolor="none",
+            framealpha=1.0 if word_ready else None,
+            fontsize=LEGEND_SIZE * (1.0 if word_ready else 1.0),
             handlelength=1.5,
             handletextpad=0.35,
             columnspacing=0.65,
             borderaxespad=0,
         )
 
-        add_panel_label(ax, i)
+        if word_ready:
+            # 编号位于图例上方，二者保持独立空间。
+            legend.get_frame().set_facecolor("white")
+            legend.get_frame().set_alpha(1.0)
+            legend.set_zorder(1000)
+
+        add_panel_label(
+            ax,
+            i,
+            y=1.035 if word_ready else 0.985,
+            fontsize=PANEL_LABEL_SIZE * text_scale,
+        )
         style_axis(ax)
 
         ax.grid(
@@ -1866,18 +2183,19 @@ def draw_ale_top6_combo(
         )
 
     fig.subplots_adjust(
-        left=0.065,
-        right=0.955,
-        bottom=0.12,
-        top=0.95,
-        wspace=0.30,
-        hspace=0.42,
+        left=0.075 if word_ready else 0.065,
+        right=0.975 if word_ready else 0.955,
+        bottom=0.11 if word_ready else 0.12,
+        top=0.93 if word_ready else 0.95,
+        wspace=0.32 if word_ready else 0.30,
+        hspace=0.54 if word_ready else 0.42,
     )
 
     save_figure(
         fig,
         out_file,
         tight=False,
+        dpi=WORD_ALE_DPI,
     )
 
 
@@ -1889,6 +2207,7 @@ def redraw_ale_suite(
     features: Sequence[str],
     out_dir: Path,
     prefix: str,
+    word_ready_combo: bool = False,
 ) -> None:
 
     ensure_dir(out_dir)
@@ -1899,6 +2218,7 @@ def redraw_ale_suite(
         ale_summary,
         features,
         out_dir / f"{prefix}_ALE_Top6_2x3",
+        word_ready=word_ready_combo,
     )
 
     for feature in features:
@@ -2158,7 +2478,12 @@ def draw_ale_main_vs_sensitivity(
             columnspacing=0.7,
         )
 
-        add_panel_label(ax, i)
+        # (a) 的 No-Year 虚线从左上角起始，标签移至坐标轴上方，
+        # 避免与曲线重合；其余子图位置保持不变。
+        if i == 0:
+            add_panel_label(ax, i, x=0.012, y=1.018)
+        else:
+            add_panel_label(ax, i)
         style_axis(ax)
 
     fig.subplots_adjust(
@@ -2213,6 +2538,7 @@ def redraw_all_main_figures() -> None:
         top6,
         MAIN_ALE_OUT,
         prefix=model,
+        word_ready_combo=True,
     )
 
 
@@ -2822,16 +3148,11 @@ def create_output_structure() -> None:
 # =============================================================================
 def preflight_check() -> None:
 
-    initialize_run_paths()
-
     print("=" * 90)
     print("03_Redraw_Final_Figures.py")
     print("01 + 02 全图件独立重绘版")
     print("不训练模型、不运行 Optuna、不重新计算 SHAP/ALE。")
     print("=" * 90)
-
-    assert MAIN_RUN is not None
-    assert SENS_RUN is not None
 
     if not MAIN_RUN.exists():
 
