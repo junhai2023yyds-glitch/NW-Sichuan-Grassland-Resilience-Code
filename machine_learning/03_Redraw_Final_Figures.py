@@ -159,6 +159,7 @@ ALE_COMPARE_SIZE = (13.8, 7.8)
 # Word 正文通栏版保持紧凑横向比例，仅略增加高度，给纵轴顶部留出图例空间。
 ALE_WORD_COMBO_SIZE = (10.0, 6.4)
 ALE_WORD_TEXT_SCALE = 1.35
+ALE_INTERVAL_LABEL = "2.5th–97.5th percentile intervals"
 
 # Word 版画布较窄时，Matplotlib 会自动改变刻度间隔。这里固定为原 13.8 in
 # 组合图的刻度，确保仅缩放视觉尺寸，绝不改变读图数值。
@@ -369,6 +370,14 @@ def style_axis(ax) -> None:
 
     for t in ax.get_xticklabels() + ax.get_yticklabels():
         t.set_fontfamily(FONT_FAMILY)
+
+
+def style_beeswarm_axis(ax) -> None:
+    """Apply the common axis style and retain the beeswarm left spine."""
+    style_axis(ax)
+    ax.spines["left"].set_visible(True)
+    ax.spines["left"].set_color("black")
+    ax.spines["left"].set_linewidth(AXIS_LINE_WIDTH)
 
 
 def set_feature_xaxis(
@@ -1108,7 +1117,6 @@ def draw_shap_bar(
             va="center",
             ha="left",
             fontsize=BAR_VALUE_SIZE,
-            fontweight="bold",
         )
 
     style_axis(ax)
@@ -1194,7 +1202,7 @@ def draw_shap_beeswarm(
 
     ax.set_ylabel("Features")
 
-    style_axis(ax)
+    style_beeswarm_axis(ax)
 
     save_figure(
         fig,
@@ -1290,7 +1298,6 @@ def draw_shap_bar_beeswarm_combo(
             va="center",
             ha="left",
             fontsize=BAR_VALUE_SIZE,
-            fontweight="bold",
         )
 
     style_axis(ax1)
@@ -1354,7 +1361,7 @@ def draw_shap_bar_beeswarm_combo(
 
     ax2.set_ylabel("Features")
 
-    style_axis(ax2)
+    style_beeswarm_axis(ax2)
 
     # 子图编号统一放在两个子图内容区上方：
     # (a) 不再压到 TMX 横条或纵轴上；
@@ -1976,6 +1983,9 @@ def draw_ale_single(
     )
 
     ax.set_ylabel("ALE effect")
+    ax.yaxis.set_major_formatter(
+        FuncFormatter(format_three_decimal)
+    )
 
     # 每个子图都有图例
     handles = [
@@ -1983,7 +1993,7 @@ def draw_ale_single(
             facecolor=style["fill"],
             edgecolor="none",
             alpha=0.85,
-            label="2.5th–97.5th percentile interval",
+            label=ALE_INTERVAL_LABEL,
         ),
         Line2D(
             [0],
@@ -2131,7 +2141,7 @@ def draw_ale_top6_combo(
                 facecolor=style["fill"],
                 edgecolor="none",
                 alpha=0.85,
-                label="2.5th–97.5th percentile interval",
+                label=ALE_INTERVAL_LABEL,
             ),
             Line2D(
                 [0],
