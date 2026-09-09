@@ -117,6 +117,9 @@ FONT_SIZE = 10.5
 AXIS_LABEL_SIZE = 11.0
 TICK_SIZE = 9.5
 PANEL_LABEL_SIZE = 12.5
+# ALE Word 组合图画布比 SHAP 组合图窄；用 10.5 pt 可使二者在
+# Word 中等宽插入时呈现相同的最终编号视觉大小。
+ALE_WORD_PANEL_LABEL_SIZE = 10.5
 LEGEND_SIZE = 7.5
 TITLE_SIZE = 11.0
 
@@ -2180,7 +2183,11 @@ def draw_ale_top6_combo(
             ax,
             i,
             y=1.035 if word_ready else 0.985,
-            fontsize=PANEL_LABEL_SIZE * text_scale,
+            # 与 SHAP 组合图在 Word 等宽插入后的视觉字号对齐。
+            fontsize=(
+                ALE_WORD_PANEL_LABEL_SIZE
+                if word_ready else PANEL_LABEL_SIZE
+            ),
         )
         style_axis(ax)
 
@@ -2218,6 +2225,7 @@ def redraw_ale_suite(
     out_dir: Path,
     prefix: str,
     word_ready_combo: bool = False,
+    combo_suffix: str = "",
 ) -> None:
 
     ensure_dir(out_dir)
@@ -2227,7 +2235,7 @@ def redraw_ale_suite(
     draw_ale_top6_combo(
         ale_summary,
         features,
-        out_dir / f"{prefix}_ALE_Top6_2x3",
+        out_dir / f"{prefix}_ALE_Top6_2x3{combo_suffix}",
         word_ready=word_ready_combo,
     )
 
@@ -2549,6 +2557,7 @@ def redraw_all_main_figures() -> None:
         MAIN_ALE_OUT,
         prefix=model,
         word_ready_combo=True,
+        combo_suffix="_SHAPVisualLabelAligned",
     )
 
 
