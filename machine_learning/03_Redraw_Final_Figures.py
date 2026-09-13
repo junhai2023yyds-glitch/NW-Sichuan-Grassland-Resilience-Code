@@ -120,6 +120,9 @@ PANEL_LABEL_SIZE = 12.5
 # ALE Word 组合图画布比 SHAP 组合图窄；用 10.5 pt 可使二者在
 # Word 中等宽插入时呈现相同的最终编号视觉大小。
 ALE_WORD_PANEL_LABEL_SIZE = 10.5
+# 纵轴标题不再随 Word 版其余文字整体放大，避免在多面板中显得过重；
+# 12.5 pt 与刻度及 SHAP 组合图的最终视觉比例更协调。
+ALE_WORD_YLABEL_SIZE = 12.5
 LEGEND_SIZE = 7.5
 TITLE_SIZE = 11.0
 
@@ -2114,7 +2117,7 @@ def draw_ale_top6_combo(
             ax.yaxis.set_major_formatter(
                 FuncFormatter(format_three_decimal)
             )
-            # 只在纵轴顶部增加少量视觉留白；原有数据范围、刻度位置不变。
+            # 保持原有纵轴高度，仅增加少量视觉留白。
             ymin, ymax = ax.get_ylim()
             ax.set_ylim(ymin, ymax + (ymax - ymin) * 0.075)
 
@@ -2130,7 +2133,11 @@ def draw_ale_top6_combo(
 
         ax.set_ylabel(
             "ALE effect",
-            fontsize=AXIS_LABEL_SIZE * text_scale,
+            fontsize=(
+                ALE_WORD_YLABEL_SIZE
+                if word_ready else AXIS_LABEL_SIZE * text_scale
+            ),
+            fontfamily=FONT_FAMILY,
         )
 
         ax.tick_params(
@@ -2159,7 +2166,7 @@ def draw_ale_top6_combo(
         legend = ax.legend(
             handles=handles,
             loc="upper center",
-            # Word 版图例留在子图上部；不透明底板确保阴影不会透入图例。
+            # 保持原图例位置；不透明底板确保阴影不会透入图例。
             bbox_to_anchor=(0.5, 0.915 if word_ready else 1.03),
             ncol=2,
             frameon=word_ready,
@@ -2200,11 +2207,13 @@ def draw_ale_top6_combo(
         )
 
     fig.subplots_adjust(
-        left=0.075 if word_ready else 0.065,
+        # Word 左边界额外留出安全区，避免左列纵轴标题贴近页面边缘。
+        left=0.095 if word_ready else 0.065,
         right=0.975 if word_ready else 0.955,
         bottom=0.11 if word_ready else 0.12,
         top=0.93 if word_ready else 0.95,
-        wspace=0.32 if word_ready else 0.30,
+        # 仅小幅加宽列间距，避免中间列纵轴标题与相邻零值虚线相碰。
+        wspace=0.38 if word_ready else 0.30,
         hspace=0.54 if word_ready else 0.42,
     )
 
@@ -2557,7 +2566,7 @@ def redraw_all_main_figures() -> None:
         MAIN_ALE_OUT,
         prefix=model,
         word_ready_combo=True,
-        combo_suffix="_SHAPVisualLabelAligned",
+        combo_suffix="_SHAPVisualLabelAligned_YLabelRefined_CompactSpaced",
     )
 
 
