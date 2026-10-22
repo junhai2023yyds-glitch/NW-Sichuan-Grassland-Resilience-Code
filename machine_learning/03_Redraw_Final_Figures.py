@@ -2042,11 +2042,34 @@ def draw_ale_single(
 # =============================================================================
 # 20. ALE 2 × 3 六子图（2.5th–97.5th percentile interval）
 # =============================================================================
+def load_ale_predictor_observations(csv_path: Optional[Path] = None) -> pd.DataFrame:
+    """Original grid-year predictors, never repeated CV test predictions."""
+    if csv_path is None:
+        csv_path = MAIN_RUN.parent.parent / "ABCD_加入DEM坡度均值_log处理" / "建模数据格网20_669完整格网_含Block100.csv"
+    columns = ["patch_id1", "Year", "TMX", "SR", "TMN", "SM", "PRE", "GI"]
+    data = pd.read_csv(require_file(Path(csv_path), "ALE histogram observations"), usecols=columns)
+    data = data.loc[data["Year"].between(1985, 2020)].copy()
+    keys = ["patch_id1", "Year"]
+    if data[keys].isna().any().any():
+        raise ValueError("Missing grid-year identifiers.")
+    # Identical repeats count once; conflicting repeats must be investigated.
+    data = data.drop_duplicates()
+    if data.duplicated(keys).any():
+        raise ValueError("Conflicting predictor values for a grid-year.")
+    if len(data) != 24084 or data["patch_id1"].nunique() != 669:
+        raise ValueError("Expected 24,084 observations from 669 grids.")
+    if not data.groupby("patch_id1")["Year"].nunique().eq(36).all():
+        raise ValueError("Expected 36 annual observations per grid.")
+    return data
+
+
 def draw_ale_top6_combo(
     ale_summary: pd.DataFrame,
     features: Sequence[str],
     out_file: Path,
     word_ready: bool = False,
+    predictor_observations: Optional[pd.DataFrame] = None,
+    single_output_dir: Optional[Path] = None,
 ) -> None:
 
     features = list(features)[:6]
@@ -2117,9 +2140,16 @@ def draw_ale_top6_combo(
             ax.yaxis.set_major_formatter(
                 FuncFormatter(format_three_decimal)
             )
-            # 保持原有纵轴高度，仅增加少量视觉留白。
+            # 恢复 CompactSpaced 原版范围，避免裁掉区间上界。
             ymin, ymax = ax.get_ylim()
-            ax.set_ylim(ymin, ymax + (ymax - ymin) * 0.075)
+            legacy_ymax = ymax + (ymax - ymin) * 0.075
+            visible_y_ticks = [
+                tick
+                for tick in reference_ticks["y"]
+                if ymin <= tick <= legacy_ymax
+            ]
+            ax.set_yticks(visible_y_ticks)
+            ax.set_ylim(ymin, legacy_ymax)
 
         # 顶部不显示重复名称
         ax.set_title("")
@@ -2185,6 +2215,14 @@ def draw_ale_top6_combo(
             legend.get_frame().set_facecolor("white")
             legend.get_frame().set_alpha(1.0)
             legend.set_zorder(1000)
+            # 图例白底可能越过左轴线：将原轴线完整绘于白底之上，
+            # 避免轴线被部分覆盖而显得变细、变灰。不要叠画第二条线。
+            for spine_name in ("left", "bottom"):
+                spine = ax.spines[spine_name]
+                spine.set_zorder(1001)
+                spine.set_color("black")
+                spine.set_alpha(1.0)
+                spine.set_linewidth(AXIS_LINE_WIDTH)
 
         add_panel_label(
             ax,
@@ -2217,6 +2255,59 @@ def draw_ale_top6_combo(
         hspace=0.54 if word_ready else 0.42,
     )
 
+    if predictor_observations is not None:
+        # Freeze the original axes before allocating a compact lower strip.
+        # No curve, interval, limit or tick values are recalculated.
+        fig.canvas.draw()
+        for ax, feature in zip(axes, features):
+            position = ax.get_position().frozen()
+            xlim, ylim = ax.get_xlim(), ax.get_ylim()
+            xticks, yticks = ax.get_xticks(), ax.get_yticks()
+            xlabels = [label.get_text().split(" (")[0] for label in ax.get_xticklabels()]
+            ax.set_yticks(yticks)
+            ax.set_ylim(ylim)
+            ax.set_position([position.x0, position.y0 + position.height * 0.20,
+                             position.width, position.height * 0.80])
+            if word_ready:
+                ax.get_legend().set_bbox_to_anchor((0.5, 0.99))
+            hist = fig.add_axes([position.x0, position.y0 - position.height * 0.02,
+                                 position.width, position.height * 0.075], sharex=ax)
+            values = pd.to_numeric(predictor_observations[feature], errors="coerce").to_numpy(float)
+            values = values[np.isfinite(values)]
+            edges = np.linspace(xlim[0], xlim[1], 21)
+            counts, _ = np.histogram(values, bins=edges)
+            # A low-profile histogram below the original main-axis ticks.
+            # Heights are raw counts; no smoothing or resampling.
+            hist.bar(edges[:-1], counts, width=np.diff(edges), align="edge",
+                     color="#CCCCCC", edgecolor="none", linewidth=0)
+            hist.set_ylim(0, max(1, counts.max()) * 1.08)
+            hist.set_yticks([])
+            for side in ("left", "right", "top", "bottom"):
+                hist.spines[side].set_visible(False)
+            hist.tick_params(axis="x", labelbottom=False, bottom=False)
+            ax.set_xticks(xticks, labels=xlabels)
+            ax.set_xlim(xlim)
+            ax.tick_params(axis="x", labelbottom=True, bottom=True)
+            # Recreate lower labels on the histogram's live transforms;
+            # frozen display-pixel transforms would break high-DPI exports.
+            for text in list(ax.texts):
+                if text.get_text() == f"({string.ascii_lowercase[features.index(feature)]})":
+                    text.set_y(1.02)
+                    text.set_verticalalignment("bottom")
+                    continue
+                text.remove()
+            hist.set_xlabel(f"{feature_name(feature)} ({feature_unit(feature)})",
+                            fontsize=AXIS_LABEL_SIZE * text_scale,
+                            fontfamily=FONT_FAMILY, labelpad=3)
+            hist.set_gid(f"predictor_compact_histogram_{feature}")
+            hist._predictor_bin_counts = counts.copy()
+            hist._predictor_bin_edges = edges.copy()
+
+    if single_output_dir is not None:
+        if predictor_observations is None:
+            raise ValueError("Compact histogram singles require predictor observations.")
+        export_ale_compact_single_panels(fig, features, Path(single_output_dir))
+
     save_figure(
         fig,
         out_file,
@@ -2228,6 +2319,40 @@ def draw_ale_top6_combo(
 # =============================================================================
 # 21. ALE 全套
 # =============================================================================
+def export_ale_compact_single_panels(fig, features: Sequence[str], out_dir: Path) -> None:
+    """Export each main axis plus its histogram directly as vector/raster files."""
+    from matplotlib.transforms import Bbox
+    ensure_dir(out_dir)
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    panels = [
+        (fig.axes[i], next(ax for ax in fig.axes
+                          if ax.get_gid() == f"predictor_compact_histogram_{feature}"))
+        for i, feature in enumerate(features)
+    ]
+    boxes = [
+        Bbox.union([ax.get_tightbbox(renderer) for ax in pair])
+        .transformed(fig.dpi_scale_trans.inverted()).padded(0.10)
+        for pair in panels
+    ]
+    visibility = [ax.get_visible() for ax in fig.axes]
+    try:
+        for feature, pair, box in zip(features, panels, boxes):
+            for ax in fig.axes:
+                ax.set_visible(ax in pair)
+            for extension, enabled in (("png", SAVE_PNG), ("tif", SAVE_TIF),
+                                       ("svg", SAVE_SVG), ("pdf", SAVE_PDF)):
+                if not enabled:
+                    continue
+                options = dict(dpi=WORD_ALE_DPI, bbox_inches=box, facecolor="white")
+                if extension == "tif":
+                    options["pil_kwargs"] = {"compression": "tiff_lzw"}
+                fig.savefig(out_dir / f"ALE_{feature}_Single_CompactHist.{extension}", **options)
+    finally:
+        for ax, visible in zip(fig.axes, visibility):
+            ax.set_visible(visible)
+
+
 def redraw_ale_suite(
     ale_summary: pd.DataFrame,
     features: Sequence[str],
@@ -2235,6 +2360,7 @@ def redraw_ale_suite(
     prefix: str,
     word_ready_combo: bool = False,
     combo_suffix: str = "",
+    predictor_observations: Optional[pd.DataFrame] = None,
 ) -> None:
 
     ensure_dir(out_dir)
@@ -2246,7 +2372,15 @@ def redraw_ale_suite(
         features,
         out_dir / f"{prefix}_ALE_Top6_2x3{combo_suffix}",
         word_ready=word_ready_combo,
+        predictor_observations=predictor_observations,
+        single_output_dir=(
+            out_dir / f"{prefix}_Single_Panels_CompactHist"
+            if predictor_observations is not None else None
+        ),
     )
+
+    if predictor_observations is not None:
+        return
 
     for feature in features:
 
@@ -2566,7 +2700,8 @@ def redraw_all_main_figures() -> None:
         MAIN_ALE_OUT,
         prefix=model,
         word_ready_combo=True,
-        combo_suffix="_SHAPVisualLabelAligned_YLabelRefined_CompactSpaced",
+        combo_suffix="_SHAPVisualLabelAligned_YLabelRefined_CompactHist",
+        predictor_observations=load_ale_predictor_observations(),
     )
 
 
