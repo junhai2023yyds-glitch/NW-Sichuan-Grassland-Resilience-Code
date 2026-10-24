@@ -16,9 +16,13 @@
 #              + gamma * NDVI_(t-1) + epsilon_t
 #
 #   The lag-1 coefficient gamma represents vegetation memory.
-#   Gamma is min-max normalized to [0, 1] within the analysis domain:
+#   IMPORTANT: The raw gamma rasters are computed for ALL 36 midpoint years FIRST.
+#   Then ONE common gamma_min and ONE common gamma_max are obtained from all
+#   valid grassland pixels and all midpoint years (1985-2020).
+#   The SAME two bounds are used for every year (NOT per year/window/pixel):
 #
-#     gamma_norm = (gamma - gamma_min) / (gamma_max - gamma_min)
+#     gamma_norm(i,t) = (gamma(i,t) - gamma_min_global) /
+#                       (gamma_max_global - gamma_min_global)
 #
 #   The Resilience Index is:
 #
@@ -50,8 +54,12 @@
 # - No local absolute paths are hard-coded.
 # - Input rasters are expected to have identical CRS, extent, resolution,
 #   rows, and columns. The script stops rather than silently resampling.
-# - The grassland mask is applied before coefficient normalization, so the
-#   min-max normalization domain is the grassland analysis domain.
+# - The grassland mask is applied before fitting/normalization; one global
+#   min-max domain covers all valid grassland pixel-year gamma estimates.
+# - Existing RI GeoTIFFs are NEVER silently overwritten (default FALSE).
+# - Two passes are essential: 36 raw gamma rasters -> shared bounds -> 36 RI.
+# - Monthly z-scoring *within* a five-year fit window is DISTINCT from
+#   global gamma min-max normalization *across* windows.
 # ============================================================
 
 rm(list = ls())
@@ -102,9 +110,11 @@ use_cores <- 1
 # Set TRUE only when you intentionally want to replace existing outputs.
 overwrite_outputs <- FALSE
 
-# Optional diagnostic outputs.
-# TRUE writes raw gamma and normalized gamma rasters for each window.
-write_gamma_rasters <- FALSE
+# Keep all 36 raw-gamma rasters and additionally save normalized-gamma
+# rasters for independent audit. FALSE uses temporary raw-gamma files which
+# are deleted only after the WHOLE run finishes successfully.
+# Recommended TRUE for transparent response to the journal reviewer.
+write_gamma_rasters <- TRUE
 
 # ===================== 3. Input checks =====================
 
@@ -426,53 +436,10 @@ fit_ar1_pixel <- function(x) {
   c(coef[1], coef[2], coef[3], n_pairs)
 }
 
-# Min-max normalize a coefficient raster to [0, 1].
-minmax_normalize_raster <- function(r) {
-
-  mm <- global(
-    r,
-    fun = c("min", "max"),
-    na.rm = TRUE
-  )
-
-  r_min <- mm[1, "min"]
-  r_max <- mm[1, "max"]
-
-  if (!is.finite(r_min) || !is.finite(r_max)) {
-    return(
-      list(
-        raster = r * NA_real_,
-        min = NA_real_,
-        max = NA_real_
-      )
-    )
-  }
-
-  if (abs(r_max - r_min) < .Machine$double.eps) {
-    warning(
-      "Gamma has no spatial variation in this window; min-max normalization is undefined."
-    )
-
-    return(
-      list(
-        raster = r * NA_real_,
-        min = r_min,
-        max = r_max
-      )
-    )
-  }
-
-  r_norm <- (r - r_min) / (r_max - r_min)
-  r_norm <- clamp(r_norm, lower = 0, upper = 1, values = TRUE)
-
-  list(
-    raster = r_norm,
-    min = r_min,
-    max = r_max
-  )
-}
-
-# ===================== 8. Five-year moving-window RI calculation =====================
+# ===================== 8. Set up 36 five-year windows =====================
+# DO NOT use a separate min-max normalization for each window.
+# First calculate all 36 original gamma rasters, then determine a SINGLE
+# gamma_min_global / gamma_max_global from their combined valid pixels.
 
 window_start_years <- seq(
   start_year,
@@ -480,117 +447,212 @@ window_start_years <- seq(
   by = step_years
 )
 
-expected_n_windows <- end_year - start_year - window_years + 2
+midpoint_years <- window_start_years + floor(window_years / 2)
+expected_mid_years <- 1985:2020
 
-if (length(window_start_years) != expected_n_windows) {
-  stop("Unexpected number of moving windows.")
+if (!identical(as.integer(midpoint_years), as.integer(expected_mid_years))) {
+  stop("Midpoint years are not exactly 1985-2020. Check analysis settings.")
 }
 
-cat("\nNumber of 5-year windows:", length(window_start_years), "\n")
-cat(
-  "RI midpoint years:",
-  min(window_start_years + floor(window_years / 2)),
-  "to",
-  max(window_start_years + floor(window_years / 2)),
-  "\n\n"
+n_windows <- length(window_start_years)
+cat("\nNumber of 5-year windows:", n_windows, "\n")
+cat("RI midpoint years:", min(midpoint_years), "to", max(midpoint_years), "\n")
+
+# Raw gamma rasters must exist on disk between pass 1 and pass 2.
+# When write_gamma_rasters is FALSE, the working folder is removed only
+# after successful completion. When TRUE, raw gamma rasters are retained.
+gamma_work_dir <- file.path(
+  diagnostic_dir,
+  if (write_gamma_rasters) "gamma_raw_global" else "gamma_raw_temporary"
 )
 
-diagnostic_rows <- vector("list", length(window_start_years))
+raw_gamma_files <- file.path(
+  gamma_work_dir,
+  paste0("gamma_raw_", midpoint_years, ".tif")
+)
 
-for (i in seq_along(window_start_years)) {
+ri_files <- file.path(
+  ri_output_dir,
+  paste0("RI_", midpoint_years, ".tif")
+)
+
+gamma_norm_files <- file.path(
+  diagnostic_dir,
+  paste0("gamma_norm_", midpoint_years, ".tif")
+)
+
+bounds_csv <- file.path(
+  diagnostic_dir,
+  "RI_global_gamma_bounds_1985_2020.csv"
+)
+diagnostic_csv <- file.path(
+  diagnostic_dir,
+  "RI_calculation_log_1985_2020.csv"
+)
+
+# Preflight: fail BEFORE calculating anything if old files would be overwritten.
+protected_files <- c(raw_gamma_files, ri_files, bounds_csv, diagnostic_csv)
+if (write_gamma_rasters) {
+  protected_files <- c(protected_files, gamma_norm_files)
+}
+
+if (!overwrite_outputs && any(file.exists(protected_files))) {
+  existing <- protected_files[file.exists(protected_files)]
+  stop(paste0(
+    "One or more output files already exist. No existing results were changed.\n",
+    "Example(s):\n", paste(head(existing, 10), collapse = "\n"),
+    "\nUse a fresh output directory, archive old results, or explicitly set ",
+    "overwrite_outputs <- TRUE only after confirming replacement."
+  ))
+}
+
+dir.create(gamma_work_dir, recursive = TRUE, showWarnings = FALSE)
+
+# ===================== 9. PASS 1: fit raw gamma for all years =====================
+
+raw_gamma_stats <- vector("list", n_windows)
+
+for (i in seq_len(n_windows)) {
 
   ws <- window_start_years[i]
   we <- ws + window_years - 1
-  mid_year <- ws + floor(window_years / 2)
+  mid_year <- midpoint_years[i]
 
-  cat(
-    sprintf(
-      "[%02d/%02d] Window %d-%d -> RI %d\n",
-      i,
-      length(window_start_years),
-      ws,
-      we,
-      mid_year
-    )
-  )
+  cat(sprintf(
+    "[PASS 1: %02d/%02d] Fitting raw gamma %d-%d -> %d\n",
+    i, n_windows, ws, we, mid_year
+  ))
 
   window_start_date <- as.Date(sprintf("%d-01-01", ws))
-  window_end_date   <- as.Date(sprintf("%d-12-01", we))
-
-  idx <- which(
-    all_dates >= window_start_date &
-      all_dates <= window_end_date
-  )
+  window_end_date <- as.Date(sprintf("%d-12-01", we))
+  idx <- which(all_dates >= window_start_date & all_dates <= window_end_date)
 
   if (length(idx) != window_months) {
-    stop(
-      paste0(
-        "Window ", ws, "-", we,
-        " contains ", length(idx),
-        " months; expected ", window_months, "."
-      )
-    )
+    stop(sprintf(
+      "Window %d-%d has %d months; expected %d.",
+      ws, we, length(idx), window_months
+    ))
   }
 
-  # Read the 60 monthly layers for each variable.
+  # Retain the original pixelwise, within-window AR(1) fitting procedure.
   ndvi_window <- rast(ndvi_index$file[idx])
   temp_window <- rast(temp_index$file[idx])
-  pre_window  <- rast(pre_index$file[idx])
+  pre_window <- rast(pre_index$file[idx])
 
   names(ndvi_window) <- paste0("NDVI_", format(all_dates[idx], "%Y%m"))
   names(temp_window) <- paste0("TEMP_", format(all_dates[idx], "%Y%m"))
-  names(pre_window)  <- paste0("PRE_", format(all_dates[idx], "%Y%m"))
+  names(pre_window) <- paste0("PRE_", format(all_dates[idx], "%Y%m"))
 
-  # Restrict calculations to the grassland analysis domain.
   ndvi_window <- mask(ndvi_window, grass_mask)
   temp_window <- mask(temp_window, grass_mask)
-  pre_window  <- mask(pre_window, grass_mask)
+  pre_window <- mask(pre_window, grass_mask)
 
   model_stack <- c(ndvi_window, temp_window, pre_window)
-
-  coef_rasters <- app(
-    model_stack,
-    fun = fit_ar1_pixel,
-    cores = use_cores
-  )
-
-  names(coef_rasters) <- c(
-    "alpha",
-    "beta",
-    "gamma",
-    "n_pairs"
-  )
-
+  coef_rasters <- app(model_stack, fun = fit_ar1_pixel, cores = use_cores)
+  names(coef_rasters) <- c("alpha", "beta", "gamma", "n_pairs")
   gamma_raw <- coef_rasters[["gamma"]]
 
-  # Spatial min-max normalization of gamma within this 5-year window.
-  gamma_norm_result <- minmax_normalize_raster(gamma_raw)
-
-  gamma_norm <- gamma_norm_result$raster
-  names(gamma_norm) <- "gamma_norm"
-
-  # RI = 1 - normalized gamma
-  ri <- 1 - gamma_norm
-  ri <- clamp(ri, lower = 0, upper = 1, values = TRUE)
-  names(ri) <- paste0("RI_", mid_year)
-
-  out_ri <- file.path(
-    ri_output_dir,
-    paste0("RI_", mid_year, ".tif")
+  # Important: save RAW gamma, not per-window-normalized gamma.
+  # All global extrema below are obtained from these actual saved rasters.
+  writeRaster(
+    gamma_raw,
+    raw_gamma_files[i],
+    overwrite = overwrite_outputs,
+    datatype = "FLT4S",
+    NAflag = -9999,
+    gdal = c("COMPRESS=LZW")
   )
 
-  if (file.exists(out_ri) && !overwrite_outputs) {
-    stop(
-      paste0(
-        "Output already exists: ", out_ri, "\n",
-        "Set overwrite_outputs <- TRUE only if you intentionally want to replace it."
-      )
-    )
+  saved_gamma <- rast(raw_gamma_files[i])
+  gamma_mm <- global(saved_gamma, fun = c("min", "max"), na.rm = TRUE)
+  y_min <- gamma_mm[1, "min"]
+  y_max <- gamma_mm[1, "max"]
+
+  if (!is.finite(y_min) || !is.finite(y_max)) {
+    stop(sprintf("No valid fitted gamma values for midpoint year %d.", mid_year))
   }
+
+  n_valid <- global(
+    ifel(!is.na(saved_gamma), 1, NA_real_),
+    fun = "sum", na.rm = TRUE
+  )[1, 1]
+
+  raw_gamma_stats[[i]] <- data.frame(
+    window_start = ws,
+    window_end = we,
+    midpoint_year = mid_year,
+    n_months = length(idx),
+    gamma_min_raw = as.numeric(y_min),
+    gamma_max_raw = as.numeric(y_max),
+    valid_cells = as.numeric(n_valid),
+    raw_gamma_file = basename(raw_gamma_files[i]),
+    stringsAsFactors = FALSE
+  )
+
+  rm(ndvi_window, temp_window, pre_window, model_stack,
+     coef_rasters, gamma_raw, saved_gamma)
+  gc()
+}
+
+raw_stats <- do.call(rbind, raw_gamma_stats)
+
+# The ONLY normalization extrema, obtained across ALL valid pixels/years.
+gamma_min_global <- min(raw_stats$gamma_min_raw)
+gamma_max_global <- max(raw_stats$gamma_max_raw)
+
+if (!is.finite(gamma_min_global) || !is.finite(gamma_max_global) ||
+    gamma_max_global <= gamma_min_global) {
+  stop("Global gamma min-max normalization is undefined (invalid bounds).")
+}
+
+cat(sprintf(
+  "\nGLOBAL gamma bounds over ALL 36 years: min = %.12g; max = %.12g\n",
+  gamma_min_global, gamma_max_global
+))
+cat("These SAME two values will be used for EVERY RI raster.\n\n")
+
+bounds_table <- data.frame(
+  normalization_method = "global_min_max_all_valid_pixels_all_years",
+  midpoint_start_year = min(midpoint_years),
+  midpoint_end_year = max(midpoint_years),
+  n_midpoint_years = n_windows,
+  n_valid_pixel_year_values = sum(raw_stats$valid_cells),
+  gamma_min_global = gamma_min_global,
+  gamma_max_global = gamma_max_global,
+  gamma_range_global = gamma_max_global - gamma_min_global,
+  stringsAsFactors = FALSE
+)
+write.csv(bounds_table, bounds_csv, row.names = FALSE, fileEncoding = "UTF-8")
+
+# ===================== 10. PASS 2: one global scale -> RI =====================
+
+diagnostic_rows <- vector("list", n_windows)
+
+for (i in seq_len(n_windows)) {
+  mid_year <- midpoint_years[i]
+  cat(sprintf(
+    "[PASS 2: %02d/%02d] Applying SHARED gamma bounds -> RI %d\n",
+    i, n_windows, mid_year
+  ))
+
+  gamma_raw <- rast(raw_gamma_files[i])
+  gamma_norm <- (
+    gamma_raw - gamma_min_global
+  ) / (
+    gamma_max_global - gamma_min_global
+  )
+
+  # Global min-max is already mathematically bounded on the fitting domain.
+  # Clamping only prevents possible floating-point epsilon deviations.
+  gamma_norm <- clamp(gamma_norm, lower = 0, upper = 1, values = TRUE)
+  names(gamma_norm) <- "gamma_norm"
+
+  ri <- 1 - gamma_norm
+  names(ri) <- paste0("RI_", mid_year)
 
   writeRaster(
     ri,
-    out_ri,
+    ri_files[i],
     overwrite = overwrite_outputs,
     datatype = "FLT4S",
     NAflag = -9999,
@@ -598,29 +660,9 @@ for (i in seq_along(window_start_years)) {
   )
 
   if (write_gamma_rasters) {
-
-    gamma_raw_file <- file.path(
-      diagnostic_dir,
-      paste0("gamma_raw_", mid_year, ".tif")
-    )
-
-    gamma_norm_file <- file.path(
-      diagnostic_dir,
-      paste0("gamma_norm_", mid_year, ".tif")
-    )
-
-    writeRaster(
-      gamma_raw,
-      gamma_raw_file,
-      overwrite = overwrite_outputs,
-      datatype = "FLT4S",
-      NAflag = -9999,
-      gdal = c("COMPRESS=LZW")
-    )
-
     writeRaster(
       gamma_norm,
-      gamma_norm_file,
+      gamma_norm_files[i],
       overwrite = overwrite_outputs,
       datatype = "FLT4S",
       NAflag = -9999,
@@ -628,99 +670,64 @@ for (i in seq_along(window_start_years)) {
     )
   }
 
-  # Diagnostics for reproducibility.
-  ri_mm <- global(
-    ri,
-    fun = c("min", "max", "mean"),
-    na.rm = TRUE
-  )
+  ri_saved <- rast(ri_files[i])
+  ri_mm <- global(ri_saved, fun = c("min", "max", "mean"), na.rm = TRUE)
 
-  valid_cells <- global(
-    ifel(!is.na(ri), 1, NA),
-    fun = "sum",
-    na.rm = TRUE
-  )[1, 1]
+  if (!all(is.finite(as.numeric(ri_mm[1, ])))) {
+    stop(sprintf("RI stats are invalid for year %d.", mid_year))
+  }
+
+  # Numerical guard to ensure the computed index remains in [0, 1].
+  if (ri_mm[1, "min"] < -1e-6 || ri_mm[1, "max"] > 1 + 1e-6) {
+    stop(sprintf("RI outside [0,1] detected for year %d.", mid_year))
+  }
 
   diagnostic_rows[[i]] <- data.frame(
-    window_start = ws,
-    window_end = we,
-    midpoint_year = mid_year,
-    n_months = length(idx),
-    gamma_min_raw = gamma_norm_result$min,
-    gamma_max_raw = gamma_norm_result$max,
-    RI_min = ri_mm[1, "min"],
-    RI_max = ri_mm[1, "max"],
-    RI_mean = ri_mm[1, "mean"],
-    valid_cells = valid_cells,
-    output_file = basename(out_ri),
+    raw_stats[i, ],
+    gamma_min_global = gamma_min_global,
+    gamma_max_global = gamma_max_global,
+    RI_min = as.numeric(ri_mm[1, "min"]),
+    RI_max = as.numeric(ri_mm[1, "max"]),
+    RI_mean = as.numeric(ri_mm[1, "mean"]),
+    output_file = basename(ri_files[i]),
+    normalization_scope = "ALL_PIXELS_ALL_YEARS_1985_2020",
     stringsAsFactors = FALSE
   )
 
-  # Release large objects before the next window.
-  rm(
-    ndvi_window,
-    temp_window,
-    pre_window,
-    model_stack,
-    coef_rasters,
-    gamma_raw,
-    gamma_norm,
-    ri
-  )
-
+  rm(gamma_raw, gamma_norm, ri, ri_saved)
   gc()
 }
 
-# ===================== 9. Write calculation log =====================
+diagnostic_table <- do.call(rbind, diagnostic_rows)
+write.csv(diagnostic_table, diagnostic_csv, row.names = FALSE,
+          fileEncoding = "UTF-8")
 
-diagnostic_table <- do.call(
-  rbind,
-  diagnostic_rows
-)
+# ===================== 11. Final checks & cleanup =====================
 
-diagnostic_csv <- file.path(
-  diagnostic_dir,
-  "RI_calculation_log_1985_2020.csv"
-)
-
-write.csv(
-  diagnostic_table,
-  diagnostic_csv,
-  row.names = FALSE,
-  fileEncoding = "UTF-8"
-)
-
-# ===================== 10. Final checks =====================
-
-expected_mid_years <- 1985:2020
-
-created_files <- file.path(
-  ri_output_dir,
-  paste0("RI_", expected_mid_years, ".tif")
-)
-
-missing_outputs <- created_files[!file.exists(created_files)]
-
-if (length(missing_outputs) > 0) {
-  warning(
-    paste0(
-      "The following expected RI outputs are missing:\n",
-      paste(missing_outputs, collapse = "\n")
-    )
-  )
-} else {
-  cat("\nAll expected RI rasters (1985-2020) are present.\n")
+missing_outputs <- ri_files[!file.exists(ri_files)]
+if (length(missing_outputs) > 0L) {
+  stop(paste("Missing RI rasters:", paste(missing_outputs, collapse = "\n")))
 }
 
-cat("\nRI calculation completed.\n")
-cat("RI output directory:\n", ri_output_dir, "\n")
-cat("Diagnostic log:\n", diagnostic_csv, "\n\n")
+if (!write_gamma_rasters) {
+  # Delete temporary gamma ONLY after both passes and diagnostics succeed.
+  unlink(gamma_work_dir, recursive = TRUE)
+}
 
-cat("Method summary:\n")
-cat("1. Monthly NDVI, temperature, and precipitation: 1983-2022.\n")
-cat("2. Five-year moving window with a one-year step.\n")
-cat("3. Pixel-wise z-score standardization within each 60-month window.\n")
-cat("4. AR(1): NDVI_t = alpha*Temp_t + beta*Pre_t + gamma*NDVI_(t-1) + epsilon_t.\n")
-cat("5. Spatial min-max normalization of gamma within each window.\n")
-cat("6. RI = 1 - gamma_norm.\n")
-cat("7. Window midpoint year used as RI year: 1985-2020.\n")
+cat("\nAll 36 RI rasters (1985-2020) have been generated.\n")
+cat("RI output directory: ", ri_output_dir, "\n")
+cat("Global normalization bounds: ", bounds_csv, "\n")
+cat("Annual diagnostic log: ", diagnostic_csv, "\n")
+if (write_gamma_rasters) {
+  cat("Retained raw gamma rasters: ", gamma_work_dir, "\n")
+  cat("Retained gamma_norm rasters: ", diagnostic_dir, "\n")
+}
+
+cat("\nMethod summary:\n")
+cat("1. Monthly NDVI, temperature, precipitation: 1983-2022.\n")
+cat("2. Five-year centered windows, one-year step: midpoint 1985-2020.\n")
+cat("3. Pixelwise z-score standardization within each 60-month window.\n")
+cat("4. AR(1) coefficient gamma estimated separately in each window.\n")
+cat("5. ONE GLOBAL min-max pair of gamma over ALL pixels and 36 years.\n")
+cat("6. The SAME gamma bounds are applied to every year; RI = 1-gamma_norm.\n")
+cat("7. No within-year, within-window, or within-pixel gamma min-max scaling.\n")
