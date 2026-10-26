@@ -63,18 +63,19 @@ from matplotlib.ticker import FuncFormatter
 
 
 # -----------------------------------------------------------------------------
-# 1. 本机路径。以下已按用户要求固定，无需调整。
+# 1. Portable paths. Environment variables can point to local data and prior runs.
 # -----------------------------------------------------------------------------
-CSV_FILE_PATH = Path(
-    r"C:\Users\yihai\Desktop\川西北\机器学习建模数据\ABCD_加入DEM坡度均值_log处理\建模数据格网20_669完整格网_含Block100.csv"
-)
-OUTPUT_ROOT_FOLDER = Path(
-    r"C:\Users\yihai\Desktop\川西北\机器学习建模数据\XGBOOST+SHAP最新20km"
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CSV_FILE_PATH = Path(os.environ.get(
+    "NW_GI05_DATA_CSV", REPO_ROOT / "data" / "modeling_data.csv"
+)).expanduser()
+OUTPUT_ROOT_FOLDER = Path(os.environ.get(
+    "NW_GI05_OUTPUT_ROOT", REPO_ROOT / "output"
+)).expanduser()
 
-# 与 03、04 的正式主分析路径一致。若该目录不存在，回退到 latest_main_run.txt。
-EXPLICIT_MAIN_RUN_DIR = OUTPUT_ROOT_FOLDER / "Final_ML_Main_20260812_230042"
-PREFER_EXPLICIT_MAIN_RUN = True
+# Optionally point to a specific completed 01 run; otherwise use the latest pointer
+# or discover the newest valid run below OUTPUT_ROOT_FOLDER.
+MAIN_RUN_OVERRIDE = os.environ.get("NW_GI05_MAIN_RUN_DIR")
 LATEST_MAIN_POINTER = OUTPUT_ROOT_FOLDER / "latest_main_run.txt"
 
 RUN_PREFIX = "06_GI_2001_Break_Sensitivity"
@@ -192,14 +193,22 @@ def save_figure(fig, stem: Path):
 
 
 def resolve_main_run() -> Path:
-    if PREFER_EXPLICIT_MAIN_RUN and EXPLICIT_MAIN_RUN_DIR.exists():
-        result = EXPLICIT_MAIN_RUN_DIR
+    if MAIN_RUN_OVERRIDE:
+        result = Path(MAIN_RUN_OVERRIDE).expanduser()
     elif LATEST_MAIN_POINTER.exists():
         result = Path(LATEST_MAIN_POINTER.read_text(encoding="utf-8-sig").strip())
     else:
-        raise FileNotFoundError(
-            f"找不到原主分析 {EXPLICIT_MAIN_RUN_DIR}，也找不到 {LATEST_MAIN_POINTER}。"
+        candidates = sorted(
+            OUTPUT_ROOT_FOLDER.glob("Final_ML_Main_*"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
         )
+        result = next((path for path in candidates if path.is_dir()), None)
+        if result is None:
+            raise FileNotFoundError(
+                "未找到已完成的 01 主分析。请设置 NW_GI05_MAIN_RUN_DIR，或提供 "
+                f"{LATEST_MAIN_POINTER} / Final_ML_Main_* 目录。"
+            )
     if not result.is_dir():
         raise FileNotFoundError(f"主分析目录不存在：{result}")
     required = ["selected_model_for_sensitivity.json", "01_split_manifest/outer_split_assignment_by_observation.csv",

@@ -62,19 +62,20 @@ from ml_common import (
 )
 
 # =============================================================================
-# 1. Windows 路径与运行选项：用户只需确认此处
+# 1. Portable paths and run options
 # =============================================================================
-DATA_CSV = Path(
-    r"C:\Users\yihai\Desktop\川西北\机器学习建模数据\ABCD_加入DEM坡度均值_log处理\建模数据格网20_669完整格网_含Block100.csv"
-)
-OUTPUT_ROOT = Path(
-    r"C:\Users\yihai\Desktop\川西北\机器学习建模数据\XGBOOST+SHAP最新20km"
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_CSV = Path(os.environ.get(
+    "NW_C16_DATA_CSV", REPO_ROOT / "data" / "modeling_data.csv"
+)).expanduser()
+OUTPUT_ROOT = Path(os.environ.get(
+    "NW_C16_OUTPUT_ROOT", REPO_ROOT / "output"
+)).expanduser()
 
 # 正常情况下自动读取 OUTPUT_ROOT/latest_main_run.txt。
 # 如果没有这个指针，会自动搜索该目录下已完成的 Final_ML_Main_* 文件夹。
 # 仅在确实需要手动指定其他主分析版本时填写完整目录；默认保持 None。
-MAIN_RUN_OVERRIDE = None
+MAIN_RUN_OVERRIDE = os.environ.get("NW_C16_MAIN_RUN_DIR")
 
 # 每个 25 外层测试折都做重复联合置换。数值可提高到 30 或 50，耗时也会增加。
 GPFI_PERMUTATIONS_PER_FOLD = 20
@@ -99,12 +100,7 @@ MODEL_INTERNAL_N_JOBS = 4
 RANDOM_SEED = 20261025
 FIGURE_DPI = 600
 
-# 调试/测试专用覆盖项：正常运行无需设置任何环境变量。
-# 环境变量只用于同一脚本的小样本回归测试，绝不改变用户默认路径。
-if os.environ.get("NW_C16_DATA_CSV"):
-    DATA_CSV = Path(os.environ["NW_C16_DATA_CSV"])
-if os.environ.get("NW_C16_OUTPUT_ROOT"):
-    OUTPUT_ROOT = Path(os.environ["NW_C16_OUTPUT_ROOT"])
+# Optional overrides for local data/output locations and smaller diagnostic runs.
 if os.environ.get("NW_C16_GPFI_PERM"):
     GPFI_PERMUTATIONS_PER_FOLD = int(os.environ["NW_C16_GPFI_PERM"])
 if os.environ.get("NW_C16_SHAP_EVAL"):
