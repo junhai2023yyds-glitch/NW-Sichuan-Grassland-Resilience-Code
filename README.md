@@ -2,7 +2,7 @@
 
 This repository contains the reproducible code used for grassland ecosystem resilience-index calculation, spatial-change analysis, and machine-learning modeling and interpretation in northwestern Sichuan, China.
 
-The repository includes the R workflow for data preprocessing, resilience-index calculation, and spatial analysis, the Python workflow for model comparison and interpretation, and supplementary records of the optimal hyperparameters obtained across the 25 outer tasks of the nested grouped cross-validation.
+The repository includes the R workflow for data preprocessing, resilience-index calculation, spatial analysis, and supplementary temporal-dependence and endpoint checks; the Python workflow for model comparison, interpretation, period-specific grazing analysis, and driver-grouping robustness; and records of the optimal hyperparameters across the 25 outer tasks of the nested grouped cross-validation.
 
 ## 1. Analysis workflow
 
@@ -23,10 +23,23 @@ The R workflow includes:
 ```text
 R_analysis/
 ├── 01_RI_calculation.R
-└── 02_RI_spatial_analysis.R
+├── 02_RI_spatial_analysis.R
+├── 03_EdgeRule_Sensitivity_NullModel_Portable.R
+├── 04_RI_SerialDependence_LinearSensitivity.R
+└── 05_RI_ExploratoryTurning_Audit.R
 ```
 
 All data preprocessing, resilience-index calculation, and spatial heterogeneity analyses were performed in **R 4.5.2**. Raster and vector data reading, cropping, masking, pixel-wise calculations, and actual pixel-area calculations were implemented using the `terra` package (**v1.8-93**). Linear regression, statistical procedures, and file handling used the base R packages `stats`, `tools`, and `utils`, respectively. Pettitt change-point detection and segmented regression were implemented using custom functions in the analysis scripts; the `trend` and `segmented` packages were not used directly.
+
+### Supplementary R analyses and interpretation
+
+- `03_EdgeRule_Sensitivity_NullModel_Portable.R`: evaluates endpoint-rule sensitivity using alternative 3-, 5-, and 7-year endpoint restrictions and a sampled null-model analysis. It assesses sensitivity of the early turning-point concentration, not pixel-level validation of every turning point.
+- `04_RI_SerialDependence_LinearSensitivity.R`: diagnoses serial dependence and evaluates regional and pixel-level **single-linear-slope** sensitivity using heteroskedasticity-and-autocorrelation-consistent (HAC) inference and Benjamini–Hochberg (BH) / Benjamini–Yekutieli (BY) multiple-testing corrections.
+- `05_RI_ExploratoryTurning_Audit.R`: audits the original spatial-classification outputs and summarizes them alongside the linear-sensitivity results. It does **not** re-estimate trends, refit turning points, or apply a validated autocorrelation/FDR correction to the original turning-point map.
+
+The original linear/turning-pattern coverage (approximately 54.01%) is an **exploratory classification summary**, not the area of change confirmed after temporal-dependence and multiple-testing correction. Linear-slope sensitivity percentages and candidate-turning percentages have different meanings and must not be substituted for one another. Experimental turning-point correction procedures that failed validation are not part of this recommended workflow.
+
+Reproducing the RI series also requires the actual source inputs and preprocessing settings, including the temporal and spatial domain used for coefficient normalization. Availability of an RI-calculation script alone does not verify the provenance of an existing RI raster series.
 
 ### 1.2 Machine-learning analysis
 
@@ -40,7 +53,7 @@ Seven ecological drivers are included:
 - `VPD` — vapor pressure deficit
 - `GI` — grazing intensity
 
-`Year` is additionally included in the main model as a temporal assistance/control variable. It participates in model training and tuning but is excluded when the contributions of the seven ecological drivers are normalized to 100%.
+`Year` is additionally included in the main model as a temporal covariate. It participates in model training and tuning but is excluded when the contributions of the seven ecological drivers are normalized to 100%.
 
 Five candidate models are compared:
 
@@ -50,7 +63,7 @@ Five candidate models are compared:
 - LightGBM
 - XGBoost
 
-The main validation framework is **5 repetitions × 5 folds nested grouped cross-validation**, using `patch_id1` as the grouping unit so that annual observations from the same spatial grid do not occur in both training and test folds.
+The main validation framework is **repeated nested grouped cross-validation: 5 inner folds and 5 outer folds repeated 5 times (25 outer tasks)**, using `patch_id1` as the grouping unit so that annual observations from the same spatial grid do not occur in both training and test folds.
 
 The final interpretation model is selected automatically according to the highest mean outer-fold Test R² across the 25 outer tasks. The interpretation model is not preset.
 
@@ -67,13 +80,18 @@ NW-Sichuan-Grassland-Resilience-Code/
 │
 ├── R_analysis/
 │   ├── 01_RI_calculation.R
-│   └── 02_RI_spatial_analysis.R
+│   ├── 02_RI_spatial_analysis.R
+│   ├── 03_EdgeRule_Sensitivity_NullModel_Portable.R
+│   ├── 04_RI_SerialDependence_LinearSensitivity.R
+│   └── 05_RI_ExploratoryTurning_Audit.R
 │
 ├── machine_learning/
 │   ├── 01_Main_ML_NestedCV_OOFSHAP_ALE.py
 │   ├── 02_Sensitivity_Analyses.py
 │   ├── 03_Redraw_Final_Figures.py
 │   ├── 04_SHAP_Interaction_SR_SM.py
+│   ├── 05_GI_2001_Break_Period_Sensitivity.py
+│   ├── 06_Driver_Grouping_Robustness.py
 │   └── ml_common.py
 │
 ├── supplementary/
@@ -85,7 +103,7 @@ NW-Sichuan-Grassland-Resilience-Code/
 └── output/                    # generated automatically; not tracked by Git
 ```
 
-The public GitHub version uses repository-relative paths. Keep the five Python files in the same `machine_learning/` directory.
+Keep all seven Python files, including `ml_common.py`, in the same `machine_learning/` directory. Check the configuration of each script before execution: the supplementary R scripts do not all use the same default input and output folders. Relative R paths resolve from the working directory; run the R commands below from the repository root.
 
 ## 3. Supplementary hyperparameter records
 
@@ -130,7 +148,7 @@ GI
 - `RI`: grassland ecosystem resilience index.
 - `patch_id1`: 20 km spatial-grid identifier used for the main grouped cross-validation.
 - `Block100`: 100 km spatial-block identifier used for spatial sensitivity analysis.
-- `Year`: temporal assistance/control predictor in the main model.
+- `Year`: temporal covariate in the main model.
 
 Each `patch_id1-Year` combination must be unique.
 
@@ -169,7 +187,7 @@ python 01_Main_ML_NestedCV_OOFSHAP_ALE.py
 The main script performs:
 
 1. comparison of OLS, exact RBF-SVR, RF, LightGBM, and XGBoost;
-2. 5 × 5 repeated nested grouped cross-validation;
+2. nested grouped cross-validation with 5 inner folds and 5 outer folds repeated 5 times;
 3. Optuna-TPE hyperparameter optimization;
 4. automatic selection of the best-performing interpretation model;
 5. Top-2 repeated k-fold corrected t-test and supplementary Wilcoxon test;
@@ -226,6 +244,40 @@ The same main-analysis `patch_id1` outer splits are reused. The analysis compare
 
 Completed sensitivity runs are recorded using `latest_sensitivity_run.txt`.
 
+### D. GI data-transition and period-specific sensitivity
+
+Run the supplementary grazing-intensity analysis using its repository filename:
+
+```bash
+python 05_GI_2001_Break_Period_Sensitivity.py
+```
+
+This analysis examines GI changes around the 2000–2001 transition and compares period-specific models for 1985–2000 and 2001–2020. It requires the completed main run and the same modeling table, including `Block100`. It reuses the main model choice and the 25 outer grid splits, with separate inner 5-fold tuning in each period. It uses 100 km spatial-block resampling for the GI-transition diagnostic and compares GI ALE responses on a common support and reference. Period-specific models are fitted and tuned separately; they are not simply the full-period model evaluated on two subsets.
+
+Input/run overrides are available through `NW_GI05_DATA_CSV`, `NW_GI05_OUTPUT_ROOT`, and `NW_GI05_MAIN_RUN_DIR`.
+
+Differences between periods indicate period dependence of the fitted associations. They do not isolate a causal effect of changing GI-data resolution, establish a universal optimal grazing intensity, or replace a common-resolution experiment using the original GI rasters. Cross-model ALE percentile bands are empirical dispersion summaries, not independent-sample confidence intervals.
+
+### E. Driver-grouping robustness
+
+After completing the main analysis, run:
+
+```bash
+python 06_Driver_Grouping_Robustness.py
+```
+
+This analysis requires the main-run OOF-SHAP, split, score, hyperparameter, and input-hash records. It rebuilds the 25 outer models with their saved hyperparameters and seeds, without a new model-selection or Optuna tuning stage. Optional No-Year comparisons use compatible sensitivity outputs linked to the same main run. Input/run overrides are available through `NW_C16_DATA_CSV`, `NW_C16_OUTPUT_ROOT`, and `NW_C16_MAIN_RUN_DIR`.
+
+It evaluates alternative group assignments, including those for SR and VPD, and distinguishes:
+
+- sums of individual mean absolute OOF-SHAP values;
+- joint grouped permutation importance, expressed as the decrease in held-out R²;
+- group-level Shapley attribution, calculated on the configured sample.
+
+These are different quantities. A decrease in R² is not a percentage contribution, and group-level Shapley attribution is not interchangeable with a sum of individual SHAP magnitudes. Report the sampling scheme and normalization denominator for each result. `Year` is held fixed during grouped permutation and treated as a separate group in group-level Shapley attribution; ecological-only percentages exclude it from their denominator.
+
+Consistency across 25 outer tasks is descriptive robustness evidence, not a significance test based on 25 independent samples. Grouping sensitivity does not remove dependence among predictors or the sensitivity of ecological rankings to including `Year`.
+
 ## 8. Figure redrawing
 
 To regenerate publication figures from completed analysis outputs without retraining models or recalculating SHAP/ALE, run:
@@ -270,20 +322,31 @@ This script requires the selected interpretation model to be tree-based (`RF`, `
 
 ## 10. Recommended execution order
 
-A complete reproduction follows the analysis sequence used in the study.
+Configure input locations before running any script. Do not rerun RI production solely to execute supplementary checks if the appropriate existing annual RI rasters are already available.
 
 ### R analysis
 
-Run the R scripts in order:
+From the repository root, run the required production steps, followed by the supplementary analyses:
 
-```text
-R_analysis/01_RI_calculation.R
-R_analysis/02_RI_spatial_analysis.R
+```bash
+Rscript R_analysis/01_RI_calculation.R
+Rscript R_analysis/02_RI_spatial_analysis.R
+Rscript R_analysis/03_EdgeRule_Sensitivity_NullModel_Portable.R
+Rscript R_analysis/04_RI_SerialDependence_LinearSensitivity.R
+Rscript R_analysis/05_RI_ExploratoryTurning_Audit.R
 ```
 
-### Machine-learning analysis
+Dependencies and path configuration:
 
-Then run:
+- `01`: configure the source-data and preprocessing settings inside the script before RI production.
+- `02`: requires the annual RI inputs and produces the original spatial-classification outputs. Check its input/output configuration rather than assuming another script's defaults.
+- `03`: uses annual RI rasters and the grassland mask directly. Its editable defaults are `ri_dir = "data/ri"`, `grass_shp = "data/mask/grassland.shp"`, and `report_root = "results"`.
+- `04`: uses `RI_ANNUAL_DIR` (default `data/RI_annual`), `RI_GRASS_MASK` (default `data/mask/grassland.shp`), and `RI_SENSITIVITY_OUT` (default `output/reviewer2_comment9/04_sensitivity`).
+- `05`: requires **both** the original `02` outputs and the `04` sensitivity outputs. Configure `RI_SPATIAL_OUT` (default `output/RI_spatial`) and `RI_SENSITIVITY_OUT`; use `RI_ORIGINAL_RUN` and `RI_SENSITIVITY_RUN` to select explicit runs where needed. Its output root is controlled by `RI_EXPLORATORY_OUT` (default `output/reviewer2_comment9/05_exploratory_audit`).
+
+The `03` and `04` default annual-raster folders differ. Point both scripts to the same intended RI series. `03` and `04` can be run independently once their inputs exist; `05` must follow the required `02` and `04` outputs. Preserve masks, valid-area definitions, years, and input versions consistently across runs.
+
+### Machine-learning analysis
 
 ```bash
 cd machine_learning
@@ -292,9 +355,13 @@ python 01_Main_ML_NestedCV_OOFSHAP_ALE.py
 python 02_Sensitivity_Analyses.py
 python 03_Redraw_Final_Figures.py
 python 04_SHAP_Interaction_SR_SM.py
+python 05_GI_2001_Break_Period_Sensitivity.py
+python 06_Driver_Grouping_Robustness.py
 ```
 
-Scripts `03` and `04` are independent after the required upstream outputs exist, so their relative order can be changed.
+The numbering is a convenient presentation order, not a claim that every script consumes the preceding script's output. `03` uses the completed main and sensitivity outputs. `04`, `05`, and `06` use the relevant main-run artifacts. The two supplementary Python scripts (`05` and `06`) do not depend on each other. Check each supplementary script's configuration and required files before execution.
+
+Use the actual repository filenames in commands. Some GI-script internal labels and output names retain a legacy `06` prefix although its repository filename starts with `05`. Likewise, legacy `S12_*` filenames in the endpoint/null workflow are output identifiers, not authoritative table numbers in the revised manuscript. Match outputs to the final supplementary tables by analysis content, not by historical prefixes.
 
 ## 11. Software environment
 
@@ -323,6 +390,8 @@ Main dependencies include:
 - joblib
 - openpyxl
 
+`statsmodels` is an optional additional dependency for the GI script's auxiliary annual segmented HAC regression. It is not currently listed in `requirements.txt`; that auxiliary step is skipped if it is unavailable. Install it separately if that output is required.
+
 Python dependencies are listed in `requirements.txt`. Each completed machine-learning run also exports the actually installed software versions to its configuration/environment folder.
 
 ### R environment
@@ -332,7 +401,9 @@ Python dependencies are listed in `requirements.txt`. Each completed machine-lea
 - The base R packages **stats**, **tools**, and **utils** were used for linear regression/statistical procedures and file handling.
 - Pettitt change-point detection and segmented regression were implemented using custom functions in the analysis scripts; the `trend` and `segmented` packages were not used directly.
 
-The R scripts under `R_analysis/` contain the complete implementation details. The software environment can additionally be recorded using `sessionInfo()`.
+The supplementary R scripts require `terra`. `sandwich` is optional for the linear-sensitivity script's cross-check rather than a mandatory dependency.
+
+The R scripts under `R_analysis/` contain the implementation details. The software environment can additionally be recorded using `sessionInfo()`.
 
 ## 12. Reproducibility design
 
@@ -351,7 +422,10 @@ Key safeguards include:
 - output manifests;
 - repeated OOF-SHAP rather than in-sample SHAP;
 - ALE instead of PDP for nonlinear interpretation under correlated predictors;
-- sensitivity analyses for temporal covariate dependence, spatial independence, and temperature-variable parameterization.
+- sensitivity analyses for temporal covariate dependence, spatial independence, and temperature-variable parameterization;
+- supplementary endpoint/null checks, serial-dependence and linear HAC/FDR sensitivity, exploratory classification auditing, period-specific GI analysis, and driver-grouping robustness.
+
+Saved code and run metadata facilitate reproduction, but do not by themselves establish that every possible workflow has been rerun successfully. Match the archived inputs, settings, and actual outputs to the analysis being reproduced.
 
 ## 13. Output files
 
@@ -370,6 +444,8 @@ Final_ML_Interaction_SR_SM_YYYYMMDD_HHMMSS/
 Final_Publication_Figures/
 ```
 
+Supplementary scripts create additional analysis-specific outputs in their configured roots. R03 defaults to `results/`, whereas R04 and R05 default to separate subdirectories under `output/reviewer2_comment9/`. Keep their run records with the corresponding results.
+
 Pointer files such as `latest_main_run.txt` and `latest_sensitivity_run.txt` are generated automatically and should not be committed to Git.
 
 ## 14. Data availability
@@ -382,7 +458,7 @@ To reproduce the machine-learning workflow with an authorized copy of the modeli
 data/modeling_data.csv
 ```
 
-See `data/README.md` for the required schema.
+See `data/README.md` for the required modeling-table schema. R analyses additionally require the relevant annual RI rasters, grassland mask, and, for upstream RI calculation, the source input series. The modeling CSV alone cannot reproduce the raster-based R analyses.
 
 ## 15. Code availability
 
